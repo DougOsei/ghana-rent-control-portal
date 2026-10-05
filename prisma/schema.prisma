@@ -1,0 +1,273 @@
+// Ghana Rent Control Property Portal - Prisma Schema
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  LANDLORD
+  TENANT
+  ADMIN_OFFICER
+}
+
+enum PropertyType {
+  SINGLE_ROOM
+  CHAMBER_AND_HALL
+  APARTMENT_1BED
+  APARTMENT_2BED
+  APARTMENT_3BED
+  DETACHED_HOUSE
+  COMMERCIAL_SHOP
+}
+
+enum PriceStatus {
+  PENDING_REVIEW
+  APPROVED_CAPPED
+  REJECTED
+}
+
+enum ApplicationStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  ACCEPTED
+  DECLINED
+}
+
+enum ContractStatus {
+  DRAFT
+  SIGNED_ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum DisputeCategory {
+  UNLAWFUL_RENT_INCREASE
+  EXCESSIVE_ADVANCE_DEMAND
+  EVICTION_WITHOUT_NOTICE
+  MAINTENANCE_NEGLECT
+  SECURITY_DEPOSIT_BREACH
+}
+
+enum DisputeStatus {
+  LODGED
+  HEARING_SCHEDULED
+  RESOLVED
+  DISMISSED
+}
+
+enum PaymentMethod {
+  MTN_MOMO
+  VODAFONE_CASH
+  AIRTELTIGO_MONEY
+  BANK_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+model User {
+  id                 String             @id @default(cuid())
+  email              String             @unique
+  passwordHash       String
+  role               Role               @default(TENANT)
+  fullName           String
+  phone              String
+  ghanaCardNumber    String             // Format: GHA-XXXXXXXXX-X
+  ghanaCardVerified  Boolean            @default(false)
+  address            String?
+  avatarUrl          String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  // Relations
+  properties         Property[]         @relation("LandlordProperties")
+  applications       Application[]      @relation("TenantApplications")
+  tenantContracts    TenancyContract[]  @relation("TenantContracts")
+  landlordContracts  TenancyContract[]  @relation("LandlordContracts")
+  officerContracts   TenancyContract[]  @relation("OfficerContracts")
+  lodgedDisputes     Dispute[]          @relation("ComplainantDisputes")
+  respondentDisputes Dispute[]          @relation("RespondentDisputes")
+  rentPayments       RentPayment[]      @relation("TenantPayments")
+
+  @@index([ghanaCardNumber])
+  @@index([role])
+}
+
+model Property {
+  id                   String            @id @default(cuid())
+  landlordId           String
+  landlord             User              @relation("LandlordProperties", fields: [landlordId], references: [id], onDelete: Cascade)
+  
+  title                String
+  description          String
+  propertyType         PropertyType      @default(APARTMENT_2BED)
+  address              String
+  region               String            // Greater Accra, Ashanti, Western, etc.
+  districtTown         String            // e.g. East Legon, Osu, Kumasi Asokwa
+  gpsAddress           String?           // GhanaPost GPS address (e.g. GA-183-9022)
+  bedrooms             Int               @default(1)
+  bathrooms            Int               @default(1)
+  sizeSqm              Float             @default(50.0)
+  housingAgeYears      Int               @default(3)
+  
+  // Amenities & Specs stored as JSON or stringified array
+  amenities            String            // e.g. ["Water (GWCL)", "Self Meter", "Gated Security", "AC"]
+  images               String            // e.g. ["/images/prop1.jpg", "/images/prop2.jpg"]
+  
+  requestedRentGhs     Float             // Landlord's requested monthly rent
+  allowableRentGhs     Float?            // Assessed max legal rent by Rent Control
+  priceStatus          PriceStatus       @default(PENDING_REVIEW)
+  certNumber           String?           @unique // e.g. GRC-ACC-2026-98124
+  certifiedAt          DateTime?
+  rejectionReason      String?
+
+  isAvailable          Boolean           @default(true)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  // Relations
+  valuations           PriceValuation[]
+  applications         Application[]
+  tenancyContracts     TenancyContract[]
+  disputes             Dispute[]
+
+  @@index([region, districtTown])
+  @@index([priceStatus])
+  @@index([landlordId])
+}
+
+model PriceValuation {
+  id                    String        @id @default(cuid())
+  propertyId            String
+  property              Property      @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  
+  baseRateGhs           Float         // Baseline rate per bedroom/size
+  zoneWeight            Float         // Location multiplier (e.g., 1.5 for prime Accra)
+  ageDepreciationFactor Float         // Age modifier (e.g., 0.95)
+  amenitiesBonusGhs     Float         // Summed amenities value (GWCL, prepaid meter, security)
+  calculatedMaxRentGhs  Float         // Formulaic Ceiling Rent
+  
+  flaggedOverpriced     Boolean       @default(false)
+  variancePercent       Float         @default(0.0) // How much requested exceeds allowable
+  assessedBy            String?       // Officer ID or "AUTOMATED_ENGINE"
+  notes                 String?
+  createdAt             DateTime      @default(now())
+
+  @@index([propertyId])
+}
+
+model Application {
+  id                    String            @id @default(cuid())
+  propertyId            String
+  property              Property          @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  tenantId              String
+  tenant                User              @relation("TenantApplications", fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  monthlyIncomeGhs      Float
+  employerOrOccupation  String
+  proposedMoveInDate    DateTime
+  proposedAdvanceMonths Int               @default(6) // Under Ghana law, max 6 months advance
+  status                ApplicationStatus @default(SUBMITTED)
+  notes                 String?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  contracts             TenancyContract[]
+
+  @@index([propertyId])
+  @@index([tenantId])
+}
+
+model TenancyContract {
+  id                    String          @id @default(cuid())
+  contractNumber        String          @unique // e.g. GRC-TC-2026-00452
+  propertyId            String
+  property              Property        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  landlordId            String
+  landlord              User            @relation("LandlordContracts", fields: [landlordId], references: [id])
+  tenantId              String
+  tenant                User            @relation("TenantContracts", fields: [tenantId], references: [id])
+  applicationId         String?
+  application           Application?    @relation(fields: [applicationId], references: [id])
+  officerId             String?
+  officer               User?           @relation("OfficerContracts", fields: [officerId], references: [id])
+  
+  rentAmountGhs         Float           // Capped rent legally enforced
+  advanceMonths         Int             @default(6) // Max 6 months legally permitted under Rent Act 1963
+  advanceAmountGhs      Float
+  startDate             DateTime
+  endDate               DateTime
+  
+  landlordSignedAt      DateTime?
+  tenantSignedAt        DateTime?
+  officerApprovedAt     DateTime?
+  
+  status                ContractStatus  @default(DRAFT)
+  certPdfUrl            String?
+  termsNotes            String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  payments              RentPayment[]
+  disputes              Dispute[]
+
+  @@index([propertyId])
+  @@index([landlordId])
+  @@index([tenantId])
+}
+
+model Dispute {
+  id                    String          @id @default(cuid())
+  caseNumber            String          @unique // e.g. GRC-DSP-2026-8823
+  propertyId            String
+  property              Property        @relation(fields: [propertyId], references: [id])
+  contractId            String?
+  contract              TenancyContract? @relation(fields: [contractId], references: [id])
+  
+  complainantId         String
+  complainant           User            @relation("ComplainantDisputes", fields: [complainantId], references: [id])
+  respondentId          String
+  respondent            User            @relation("RespondentDisputes", fields: [respondentId], references: [id])
+  
+  category              DisputeCategory
+  title                 String
+  description           String
+  evidenceFiles         String?         // JSON array of file paths
+  status                DisputeStatus   @default(LODGED)
+  hearingDate           DateTime?
+  resolutionDetails     String?
+  resolvedByOfficerId   String?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@index([complainantId])
+  @@index([respondentId])
+  @@index([status])
+}
+
+model RentPayment {
+  id                    String          @id @default(cuid())
+  transactionRef        String          @unique // e.g. MOMO-GRC-202610-8291
+  contractId            String
+  contract              TenancyContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  tenantId              String
+  tenant                User            @relation("TenantPayments", fields: [tenantId], references: [id])
+  
+  amountGhs             Float
+  momoNetwork           PaymentMethod   @default(MTN_MOMO)
+  momoNumber            String
+  billingPeriodMonth    String          // e.g. "October 2026"
+  status                PaymentStatus   @default(CONFIRMED)
+  receiptNumber         String          @unique // e.g. GRC-RCP-73921
+  paidAt                DateTime        @default(now())
+
+  @@index([contractId])
+  @@index([tenantId])
+}
